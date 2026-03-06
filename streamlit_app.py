@@ -162,7 +162,7 @@ class hWTF_Recharge_Calculator:
 # 2. UI 구성 (스트림릿 화면)
 # ==========================================
 st.title("🌱 hWTF 기반 지하수 함양률 산정 모델")
-st.markdown("관측된 강수량과 지하수위 데이터를 바탕으로 **Heuristic Water-Table Fluctuation (hWTF)** 알고리즘을 수행합니다.")
+st.markdown("관측된 강수량과 지하수위 데이터를 바탕으로 Hybrid Water-Table Fluctuation (hWTF) 알고리즘을 수행합니다.")
 
 soil_names = ["0: Sand", "1: Sandy Loam", "2: Loamy Sand", "3: Silt Loam", "4: Silt", "5: Clay",
               "6: Silty Clay", "7: Sandy Clay", "8: Silty Clay Loam", "9: Clay Loam", "10: Sandy Clay Loam", "11: Loam"]
