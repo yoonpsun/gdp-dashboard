@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import os
 
 # ==========================================
 # 0. 웹 페이지 기본 설정
@@ -9,7 +10,7 @@ import matplotlib.pyplot as plt
 st.set_page_config(page_title="hWTF Recharge Calculator", layout="wide")
 
 # ==========================================
-# 1. hWTF 계산 클래스 (웹 환경에 맞게 수정)
+# 1. hWTF 계산 클래스
 # ==========================================
 class hWTF_Recharge_Calculator:
     def __init__(self, soil_type_idx, k, r_cr_input, h_max, time_dry_init, verbose=False):
@@ -31,7 +32,6 @@ class hWTF_Recharge_Calculator:
         self.theta_s, self.theta_r, self.alpha, self.n, self.Ks = self.soil_db[soil_type_idx]
         self.m = 1 - (1 / self.n)
 
-    # (수정) 파일 경로 대신 판다스 데이터프레임을 직접 받습니다.
     def _read_dataframe(self, df):
         if df.shape[1] < 2:
             raise ValueError("CSV는 최소 2개(강수량, 지하수위) 또는 3개(날짜, 강수량, 지하수위)의 컬럼이 필요합니다.")
@@ -162,28 +162,57 @@ class hWTF_Recharge_Calculator:
 # 2. UI 구성 (스트림릿 화면)
 # ==========================================
 st.title("🌱 hWTF 기반 지하수 함양률 산정 모델")
-st.markdown("관측된 강수량과 지하수위 데이터를 바탕으로 Hybrid Water-Table Fluctuation (hWTF) 알고리즘을 수행합니다.")
+st.markdown("관측된 강수량과 지하수위 데이터를 바탕으로 **Heuristic Water-Table Fluctuation (hWTF)** 알고리즘을 수행합니다.")
 
 soil_names = ["0: Sand", "1: Sandy Loam", "2: Loamy Sand", "3: Silt Loam", "4: Silt", "5: Clay",
               "6: Silty Clay", "7: Sandy Clay", "8: Silty Clay Loam", "9: Clay Loam", "10: Sandy Clay Loam", "11: Loam"]
 
 with st.sidebar:
     st.header("1. 데이터 업로드")
-    uploaded_file = st.file_uploader("CSV 파일 업로드", type=["csv"])
     
+    # 샘플 데이터 다운로드 버튼 (깃허브에 hWTF_input.csv가 있어야 작동함)
+    sample_file_path = "hWTF_input.csv"
+    if os.path.exists(sample_file_path):
+        with open(sample_file_path, "rb") as file:
+            st.download_button(
+                label="📥 샘플 양식 다운로드 (CSV)",
+                data=file,
+                file_name="sample_hWTF_input.csv",
+                mime="text/csv",
+                help="이 양식에 맞춰 본인의 데이터를 작성 후 업로드하세요."
+            )
+            
+    uploaded_file = st.file_uploader("본인의 CSV 파일 업로드 (선택)", type=["csv"])
+    
+    st.markdown("---")
     st.header("2. 모델 파라미터 설정")
     s_idx = st.selectbox("토양 종류 (Soil Type)", range(12), format_func=lambda x: soil_names[x], index=0)
     k = st.number_input("기저유출 감수상수 (k)", value=-0.1, step=0.01, format="%.3f")
-    r_cr = st.number_input("임계 강수량 (r_cr)", value=5.0, step=0.5)
+    r_cr = st.number_input("임계 강수량 (r_cr, mm/m)", value=5.0, step=0.5)
     h_max = st.number_input("최대 모세관대 두께 (h_max, m)", value=2.0, step=0.1)
     time_dry = st.number_input("초기 무강우 일수 (time_dry, day)", value=3, step=1)
     
     run_btn = st.button("🚀 함양률 계산 실행", type="primary", use_container_width=True)
 
-if uploaded_file:
+# ==========================================
+# 3. 데이터 로드 로직 (기본 파일 vs 업로드 파일)
+# ==========================================
+df = None
+
+if uploaded_file is not None:
+    # 사용자가 직접 파일을 올린 경우
     df = pd.read_csv(uploaded_file)
-    
-    # 클래스 초기화 (데이터 탐색용)
+    st.info("✅ 업로드하신 데이터 파일로 분석을 진행합니다.")
+else:
+    # 사용자가 파일을 올리지 않은 경우 -> 기본 파일 불러오기
+    if os.path.exists(sample_file_path):
+        df = pd.read_csv(sample_file_path)
+        st.info("💡 **안내:** 현재 웹 서버에 내장된 **기본 샘플 데이터**가 로드되어 있습니다. 본인의 데이터를 분석하시려면 왼쪽 사이드바에서 CSV 파일을 업로드해 주세요.")
+    else:
+        st.warning("데이터 파일이 없습니다. 왼쪽 사이드바에서 CSV 파일을 업로드해 주세요.")
+
+# 데이터가 성공적으로 로드되었을 때만 메인 화면 출력
+if df is not None:
     calc = hWTF_Recharge_Calculator(s_idx, k, r_cr, h_max, time_dry)
     try:
         x_raw, P_in, H_in = calc._read_dataframe(df)
@@ -200,38 +229,38 @@ if uploaded_file:
         ax2.bar(x_raw, P_mm, alpha=0.35, width=0.8, label="Rainfall (mm)", color="C1")
         ax2.set_ylabel("Rainfall (mm)", color="C1")
         ax2.tick_params(axis='y', labelcolor="C1")
-        ax2.invert_yaxis() # 강수량은 위에서 아래로 내려오게 표현하면 직관적입니다.
+        ax2.invert_yaxis() 
 
         fig1.legend(loc="lower left", bbox_to_anchor=(0.1, 0.1))
         ax1.grid(True, linestyle="--", alpha=0.4)
         st.pyplot(fig1)
 
     except Exception as e:
-        st.error(f"데이터를 읽는 중 오류가 발생했습니다: {e}")
+        st.error(f"데이터를 처리하는 중 오류가 발생했습니다: {e}")
 
     # 계산 실행 버튼을 눌렀을 때
     if run_btn:
         with st.spinner("hWTF 알고리즘을 연산 중입니다..."):
-            x, P_mm, t_rain, t_rech, t_rate, H_obs, H_sim = calc.calculate_recharge(df)
-            
-            st.markdown("---")
-            st.subheader("✅ 산정 결과 (Results)")
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("총 강수량", f"{t_rain*1000:.1f} mm")
-            col2.metric("총 함양량", f"{t_rech*1000:.1f} mm")
-            col3.metric("지하수 함양률", f"{t_rate:.2f} %")
-            
-            st.subheader("📉 지하수위 관측치 vs 모의치 피팅 (Fitting)")
-            fig2, ax = plt.subplots(figsize=(10, 5))
-            ax.plot(x, H_obs, label="Observed (Measured)", color="black", linewidth=1.2)
-            ax.scatter(x, H_sim, label="Calculated (Simulated)", marker="o", facecolors="none", edgecolors="olivedrab", linewidths=1.2, s=35)
-            ax.set_title(f"GWL Comparison (Recharge Rate: {t_rate:.1f}%)")
-            ax.set_xlabel("Time")
-            ax.set_ylabel("Groundwater Level (m)")
-            ax.legend()
-            ax.grid(True, linestyle="--", alpha=0.4)
-            st.pyplot(fig2)
-            
-else:
-    st.info("👈 왼쪽 메뉴에서 CSV 파일을 업로드해 주세요.")
+            try:
+                x, P_mm, t_rain, t_rech, t_rate, H_obs, H_sim = calc.calculate_recharge(df)
+                
+                st.markdown("---")
+                st.subheader("✅ 산정 결과 (Results)")
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("총 강수량", f"{t_rain*1000:.1f} mm")
+                col2.metric("총 함양량", f"{t_rech*1000:.1f} mm")
+                col3.metric("지하수 함양률", f"{t_rate:.2f} %")
+                
+                st.subheader("📉 지하수위 관측치 vs 모의치 피팅 (Fitting)")
+                fig2, ax = plt.subplots(figsize=(10, 5))
+                ax.plot(x, H_obs, label="Observed (Measured)", color="black", linewidth=1.2)
+                ax.scatter(x, H_sim, label="Calculated (Simulated)", marker="o", facecolors="none", edgecolors="olivedrab", linewidths=1.2, s=35)
+                ax.set_title(f"GWL Comparison (Recharge Rate: {t_rate:.1f}%)")
+                ax.set_xlabel("Time")
+                ax.set_ylabel("Groundwater Level (m)")
+                ax.legend()
+                ax.grid(True, linestyle="--", alpha=0.4)
+                st.pyplot(fig2)
+            except Exception as e:
+                st.error(f"계산 중 오류가 발생했습니다: {e}")
