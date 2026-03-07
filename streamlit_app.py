@@ -162,7 +162,8 @@ class hWTF_Recharge_Calculator:
 # 2. UI 구성 (스트림릿 화면)
 # ==========================================
 st.title("🌱 hWTF 기반 지하수 함양률 산정 모델")
-st.markdown("관측된 강수량과 지하수위 데이터를 바탕으로 **Heuristic Water-Table Fluctuation (hWTF)** 알고리즘을 수행합니다.")
+# Hybrid로 명칭 수정
+st.markdown("관측된 강수량과 지하수위 데이터를 바탕으로 **Hybrid Water-Table Fluctuation (hWTF)** 알고리즘을 수행합니다.")
 
 soil_names = ["0: Sand", "1: Sandy Loam", "2: Loamy Sand", "3: Silt Loam", "4: Silt", "5: Clay",
               "6: Silty Clay", "7: Sandy Clay", "8: Silty Clay Loam", "9: Clay Loam", "10: Sandy Clay Loam", "11: Loam"]
@@ -170,8 +171,9 @@ soil_names = ["0: Sand", "1: Sandy Loam", "2: Loamy Sand", "3: Silt Loam", "4: S
 with st.sidebar:
     st.header("1. 데이터 업로드")
     
-    # 샘플 데이터 다운로드 버튼 (깃허브에 hWTF_input.csv가 있어야 작동함)
-    sample_file_path = "hWTF_input.csv"
+    # 수정: 깃허브의 data 폴더 경로로 지정
+    sample_file_path = "data/hWTF_input.csv"
+    
     if os.path.exists(sample_file_path):
         with open(sample_file_path, "rb") as file:
             st.download_button(
@@ -200,18 +202,16 @@ with st.sidebar:
 df = None
 
 if uploaded_file is not None:
-    # 사용자가 직접 파일을 올린 경우
     df = pd.read_csv(uploaded_file)
     st.info("✅ 업로드하신 데이터 파일로 분석을 진행합니다.")
 else:
-    # 사용자가 파일을 올리지 않은 경우 -> 기본 파일 불러오기
+    # 수정: data 폴더 안의 경로 확인
     if os.path.exists(sample_file_path):
         df = pd.read_csv(sample_file_path)
         st.info("💡 **안내:** 현재 웹 서버에 내장된 **기본 샘플 데이터**가 로드되어 있습니다. 본인의 데이터를 분석하시려면 왼쪽 사이드바에서 CSV 파일을 업로드해 주세요.")
     else:
         st.warning("데이터 파일이 없습니다. 왼쪽 사이드바에서 CSV 파일을 업로드해 주세요.")
 
-# 데이터가 성공적으로 로드되었을 때만 메인 화면 출력
 if df is not None:
     calc = hWTF_Recharge_Calculator(s_idx, k, r_cr, h_max, time_dry)
     try:
@@ -238,7 +238,6 @@ if df is not None:
     except Exception as e:
         st.error(f"데이터를 처리하는 중 오류가 발생했습니다: {e}")
 
-    # 계산 실행 버튼을 눌렀을 때
     if run_btn:
         with st.spinner("hWTF 알고리즘을 연산 중입니다..."):
             try:
