@@ -49,14 +49,13 @@ class hWTF_Recharge_Calculator:
 
     def _quad_vba(self, v, c1, c3, f1, f2, f3):
         h = c3 - c1
-        # [에러 해결] 파이썬의 동시 할당 오류를 막기 위해 줄을 나누어 순차적으로 계산
         c2 = (c3 + c1) / 2.0
         x1 = (c1 + c2) / 2.0
         x2 = (c2 + c3) / 2.0
         y1, y2 = self._vg(v, x1), self._vg(v, x2)
         q1 = (h / 6.0) * (f1 + 4.0 * f2 + f3)
         q = (h / 12.0) * (f1 + 4.0 * y1 + 2.0 * f2 + 4.0 * y2 + f3)
-        return q + (q - q1) / 15.0 # Romberg error correction (논문 일치)
+        return q + (q - q1) / 15.0
 
     def _integral_piecewise_vba(self, v, dh, wet_event=True):
         if wet_event:
@@ -134,18 +133,22 @@ class hWTF_Recharge_Calculator:
 st.title("🌱 Hybrid hWTF 지하수 함양률 산정 모델 (자동 최적화)")
 st.markdown("관측 데이터와 입력 파라미터를 기반으로 함양률을 산정하며, **100% 초과 시 AI가 물리적 한계치 내로 자동 최적화를 수행합니다.**")
 
-# 번호표 떼고 깔끔하게 수정된 토양 리스트
 soil_names = ["Sand", "Sandy Loam", "Loamy Sand", "Silt Loam", "Silt", "Clay",
               "Silty Clay", "Sandy Clay", "Silty Clay Loam", "Clay Loam", "Sandy Clay Loam", "Loam"]
 
 with st.sidebar:
     st.header("1. 데이터 업로드 방식")
     
-    upload_mode = st.radio("업로드 방식을 선택하세요:", ["A. 통합 파일 1개 업로드", "B. 강수량 / 지하수위 개별 업로드"])
+    # 옵션 이름을 ㄱ, ㄴ, ㄷ으로 변경
+    upload_mode = st.radio("업로드 방식을 선택하세요:", [
+        "ㄱ. 통합 파일 1개 업로드 (날짜 포함)", 
+        "ㄴ. 강수량 / 지하수위 개별 업로드", 
+        "ㄷ. 날짜 없는 데이터 업로드"
+    ])
     
     df_merged = None
     
-    if upload_mode == "A. 통합 파일 1개 업로드":
+    if upload_mode == "ㄱ. 통합 파일 1개 업로드 (날짜 포함)":
         st.caption("✔️ 파일 형식: [날짜, 강수량(mm), 지하수위(m)]")
         uploaded_file = st.file_uploader("통합 CSV 파일 업로드", type=["csv"])
         if uploaded_file:
@@ -158,7 +161,7 @@ with st.sidebar:
             else:
                 st.error("통합 파일은 반드시 3개 이상의 열(날짜, 강수량, 지하수위)이 필요합니다.")
                 
-    else:
+    elif upload_mode == "ㄴ. 강수량 / 지하수위 개별 업로드":
         st.caption("✔️ 날짜를 기준으로 컴퓨터가 두 파일을 자동 병합합니다.")
         rain_file = st.file_uploader("🌧️ 강수량 파일 (날짜, 강수량mm)", type=["csv"])
         gwl_file = st.file_uploader("💧 지하수위 파일 (날짜, 지하수위m)", type=["csv"])
@@ -173,9 +176,23 @@ with st.sidebar:
             df_rain['Date'] = pd.to_datetime(df_rain['Date'])
             df_gwl['Date'] = pd.to_datetime(df_gwl['Date'])
             
-            # 날짜를 기준으로 두 데이터 병합 (Inner Join)
             df_merged = pd.merge(df_rain, df_gwl, on='Date', how='inner').sort_values('Date').reset_index(drop=True)
             st.success(f"두 파일이 날짜 기준으로 완벽하게 병합되었습니다! (총 {len(df_merged)}일 데이터)")
+
+    elif upload_mode == "ㄷ. 날짜 없는 데이터 업로드":
+        st.info("💡 **확인해 주세요!**\n날짜 열이 없는 파일인 경우, 반드시 **첫 번째 열이 강수량(mm)**, **두 번째 열이 지하수위(m)** 순서로 구성되어 있는지 점검해 주세요.")
+        uploaded_file = st.file_uploader("날짜 없는 CSV 파일 업로드", type=["csv"])
+        if uploaded_file:
+            df_temp = pd.read_csv(uploaded_file)
+            if df_temp.shape[1] >= 2:
+                df_merged = pd.DataFrame()
+                # 날짜 대신 1, 2, 3... 형태의 순번(Index) 생성
+                df_merged['Date'] = np.arange(1, len(df_temp) + 1)
+                df_merged['Rainfall'] = df_temp.iloc[:, 0].astype(float)
+                df_merged['GWL'] = df_temp.iloc[:, 1].astype(float)
+                st.success(f"총 {len(df_merged)}개의 연속된 데이터가 로드되었습니다.")
+            else:
+                st.error("파일은 반드시 2개 이상의 열(강수량, 지하수위)로 구성되어야 합니다.")
 
     st.markdown("---")
     st.header("2. 초기 파라미터 설정")
@@ -195,7 +212,7 @@ if df_merged is not None:
         x_raw = df_merged['Date'].values
         P_mm, P_m, r_cr_mm, H_calc = calc._prepare_units_and_gwl(df_merged['Rainfall'].values, df_merged['GWL'].values)
         
-        # [자동 계산] 최대 연속 무강우 일수(Maximum Dry Days)
+        # [자동 계산] 최대 연속 무강우 일수(Maximum Dry Days) 탐색
         is_dry = (P_mm <= 0)
         max_dry_days, current_dry = 0, 0
         for dry in is_dry:
@@ -212,7 +229,13 @@ if df_merged is not None:
         st.subheader("📊 입력 데이터 사전 점검 (Preview)")
         fig1, ax1 = plt.subplots(figsize=(10, 4))
         ax1.plot(x_raw, H_calc, linewidth=1.2, label="GWL (m)", color="C0")
-        ax1.set_xlabel("Time")
+        
+        # X축 라벨 처리 (날짜형이면 'Time', 순번이면 'Time Steps (Days)')
+        if upload_mode == "ㄷ. 날짜 없는 데이터 업로드":
+            ax1.set_xlabel("Time Steps (Days)")
+        else:
+            ax1.set_xlabel("Time")
+            
         ax1.set_ylabel("Groundwater Level (m)", color="C0")
         ax1.tick_params(axis='y', labelcolor="C0")
 
@@ -240,7 +263,6 @@ if df_merged is not None:
                 with st.spinner("지하수위 오차를 최소화하며 함양률을 100% 이하로 제어하는 최적 파라미터를 찾는 중입니다 (약 10초 소요)..."):
                     def objective(params):
                         calc.k, calc.r_cr_input, calc.h_max = params
-                        # 최적화 중에도 mm 단위를 유지하도록 r_cr_mm 변수를 갱신하여 주입
                         r_cr_mm_opt = float(calc.r_cr_input)
                         _, _, rate, h_s = calc.run_simulation(P_mm, P_m, r_cr_mm_opt, H_calc)
                         
@@ -273,7 +295,12 @@ if df_merged is not None:
             ax.plot(x_raw, H_calc, label="Observed (Measured)", color="black", linewidth=1.2)
             ax.scatter(x_raw, H_sim, label="Calculated (Simulated)", marker="o", facecolors="none", edgecolors="olivedrab", linewidths=1.2, s=35)
             ax.set_title(f"GWL Comparison (Recharge Rate: {t_rate:.1f}%)")
-            ax.set_xlabel("Time")
+            
+            if upload_mode == "ㄷ. 날짜 없는 데이터 업로드":
+                ax.set_xlabel("Time Steps (Days)")
+            else:
+                ax.set_xlabel("Time")
+                
             ax.set_ylabel("Groundwater Level (m)")
             ax.legend()
             ax.grid(True, linestyle="--", alpha=0.4)
