@@ -11,17 +11,28 @@ from scipy.optimize import minimize
 st.set_page_config(page_title="hWTF Recharge Calculator", layout="wide")
 
 # ==========================================
+# [신규 추가] 안전한 CSV 읽기 함수 (인코딩 자동 감지)
+# ==========================================
+def read_csv_robust(file):
+    try:
+        # 전 세계 표준 방식 (UTF-8)으로 먼저 시도
+        return pd.read_csv(file, encoding='utf-8')
+    except UnicodeDecodeError:
+        # 에러가 나면 파일 포인터를 처음으로 되돌리고 한국어(CP949) 방식으로 재시도
+        file.seek(0)
+        return pd.read_csv(file, encoding='cp949')
+
+# ==========================================
 # 1. hWTF 계산 클래스
 # ==========================================
 class hWTF_Recharge_Calculator:
     def __init__(self, soil_type_idx, k, r_cr_input, h_max, verbose=False):
         self.k = float(k)
-        self.r_cr_input = float(r_cr_input) # 항상 mm로 취급
+        self.r_cr_input = float(r_cr_input)
         self.h_max = float(h_max)
         self.verbose = bool(verbose)
         self.time_dry = 1 
 
-        # 12가지 토양 물성 DB (고정)
         self.soil_db = [
             [0.43, 0.045, 14.5, 2.68, 7.128], [0.41, 0.065, 7.5,  1.89, 1.061],
             [0.41, 0.057, 12.4, 2.28, 3.05],  [0.45, 0.067, 2.0,  1.41, 0.108],
@@ -34,7 +45,6 @@ class hWTF_Recharge_Calculator:
         self.m = 1 - (1 / self.n)
 
     def _prepare_units_and_gwl(self, P_in, H_in):
-        # 강수는 무조건 mm, 지하수는 무조건 m로 확정하여 계산 오차 원천 차단
         P_mm = np.asarray(P_in, dtype=float)
         P_m = P_mm / 1000.0
         r_cr_mm = float(self.r_cr_input)
@@ -130,7 +140,7 @@ class hWTF_Recharge_Calculator:
 # ==========================================
 # 2. UI 구성 (스트림릿 화면)
 # ==========================================
-st.title("🌱 Hybrid hWTF 지하수 함양률 산정 모델 (자동 최적화)")
+st.title("🌱 Hybrid hWTF 지하수 함양률 산정 모델")
 st.markdown("관측 데이터와 입력 파라미터를 기반으로 함양률을 산정하며, **100% 초과 시 AI가 물리적 한계치 내로 자동 최적화를 수행합니다.**")
 
 soil_names = ["Sand", "Sandy Loam", "Loamy Sand", "Silt Loam", "Silt", "Clay",
@@ -139,7 +149,11 @@ soil_names = ["Sand", "Sandy Loam", "Loamy Sand", "Silt Loam", "Silt", "Clay",
 with st.sidebar:
     st.header("1. 데이터 업로드 방식")
     
-    # 옵션 이름을 ㄱ, ㄴ, ㄷ으로 변경
+    sample_file_path = "data/hWTF_input.csv"
+    if os.path.exists(sample_file_path):
+        with open(sample_file_path, "rb") as file:
+            st.download_button(label="📥 샘플 양식 다운로드 (CSV)", data=file, file_name="sample_hWTF_input.csv", mime="text/csv")
+            
     upload_mode = st.radio("업로드 방식을 선택하세요:", [
         "ㄱ. 통합 파일 1개 업로드 (날짜 포함)", 
         "ㄴ. 강수량 / 지하수위 개별 업로드", 
@@ -148,51 +162,85 @@ with st.sidebar:
     
     df_merged = None
     
+    # ----------------------------------------
+    # [ㄱ 모드] 통합 파일 업로드 및 스마트 검증
+    # ----------------------------------------
     if upload_mode == "ㄱ. 통합 파일 1개 업로드 (날짜 포함)":
         st.caption("✔️ 파일 형식: [날짜, 강수량(mm), 지하수위(m)]")
         uploaded_file = st.file_uploader("통합 CSV 파일 업로드", type=["csv"])
+        
         if uploaded_file:
-            df_temp = pd.read_csv(uploaded_file)
-            if df_temp.shape[1] >= 3:
+            df_temp = read_csv_robust(uploaded_file) # 인코딩 자동 감지 함수 사용
+            
+            # 검증 1: 열이 3개 미만인 경우
+            if df_temp.shape[1] < 3:
+                st.error("🚨 **[형식 오류]** 업로드하신 파일의 열이 3개 미만(날짜 누락 등)입니다.\n\n"
+                         "👉 만약 날짜가 없는 데이터라면 위쪽에서 **'ㄷ. 날짜 없는 데이터 업로드'** 옵션을 선택해 주세요.")
+            else:
                 df_merged = pd.DataFrame()
-                df_merged['Date'] = pd.to_datetime(df_temp.iloc[:, 0])
+                df_merged['Date'] = pd.to_datetime(df_temp.iloc[:, 0], errors='coerce')
                 df_merged['Rainfall'] = df_temp.iloc[:, 1].astype(float)
                 df_merged['GWL'] = df_temp.iloc[:, 2].astype(float)
-            else:
-                st.error("통합 파일은 반드시 3개 이상의 열(날짜, 강수량, 지하수위)이 필요합니다.")
                 
+                # 검증 2: 첫 번째 열이 날짜 포맷으로 변환되지 않은 경우
+                if df_merged['Date'].isna().mean() > 0.5:
+                    st.warning("⚠️ **[주의]** 첫 번째 열이 정상적인 '날짜' 형식으로 인식되지 않습니다. 분석은 진행되나, 날짜가 없는 데이터라면 **'ㄷ'** 옵션이 더 적합할 수 있습니다.")
+                
+    # ----------------------------------------
+    # [ㄴ 모드] 개별 파일 업로드
+    # ----------------------------------------
     elif upload_mode == "ㄴ. 강수량 / 지하수위 개별 업로드":
-        st.caption("✔️ 날짜를 기준으로 컴퓨터가 두 파일을 자동 병합합니다.")
+        st.caption("✔️ 날짜를 기준으로 두 파일을 자동 병합합니다.")
         rain_file = st.file_uploader("🌧️ 강수량 파일 (날짜, 강수량mm)", type=["csv"])
         gwl_file = st.file_uploader("💧 지하수위 파일 (날짜, 지하수위m)", type=["csv"])
         
         if rain_file and gwl_file:
-            df_rain = pd.read_csv(rain_file).iloc[:, :2]
-            df_gwl = pd.read_csv(gwl_file).iloc[:, :2]
+            df_rain = read_csv_robust(rain_file).iloc[:, :2]
+            df_gwl = read_csv_robust(gwl_file).iloc[:, :2]
             
-            df_rain.columns = ['Date', 'Rainfall']
-            df_gwl.columns = ['Date', 'GWL']
-            
-            df_rain['Date'] = pd.to_datetime(df_rain['Date'])
-            df_gwl['Date'] = pd.to_datetime(df_gwl['Date'])
-            
-            df_merged = pd.merge(df_rain, df_gwl, on='Date', how='inner').sort_values('Date').reset_index(drop=True)
-            st.success(f"두 파일이 날짜 기준으로 완벽하게 병합되었습니다! (총 {len(df_merged)}일 데이터)")
+            if df_rain.shape[1] < 2 or df_gwl.shape[1] < 2:
+                st.error("🚨 **[형식 오류]** 두 파일 모두 최소 2개의 열(날짜, 데이터)이 필요합니다.")
+            else:
+                df_rain.columns = ['Date', 'Rainfall']
+                df_gwl.columns = ['Date', 'GWL']
+                
+                df_rain['Date'] = pd.to_datetime(df_rain['Date'])
+                df_gwl['Date'] = pd.to_datetime(df_gwl['Date'])
+                
+                df_merged = pd.merge(df_rain, df_gwl, on='Date', how='inner').sort_values('Date').reset_index(drop=True)
+                st.success(f"두 파일이 병합되었습니다! (총 {len(df_merged)}일 데이터)")
 
+    # ----------------------------------------
+    # [ㄷ 모드] 날짜 없는 데이터 업로드 및 스마트 검증
+    # ----------------------------------------
     elif upload_mode == "ㄷ. 날짜 없는 데이터 업로드":
         st.info("💡 **확인해 주세요!**\n날짜 열이 없는 파일인 경우, 반드시 **첫 번째 열이 강수량(mm)**, **두 번째 열이 지하수위(m)** 순서로 구성되어 있는지 점검해 주세요.")
         uploaded_file = st.file_uploader("날짜 없는 CSV 파일 업로드", type=["csv"])
-        if uploaded_file:
-            df_temp = pd.read_csv(uploaded_file)
+        
+        if uploaded_file is not None:
+            df_temp = read_csv_robust(uploaded_file)
+            
+            # 검증 3: 파일 열이 3개 이상인 경우 (잘못 선택했을 가능성)
+            if df_temp.shape[1] >= 3:
+                st.warning("🚨 **[형식 안내]** 업로드하신 파일에 3개 이상의 열이 있습니다. 만약 첫 번째 열이 '날짜'라면 위쪽에서 **'ㄱ. 통합 파일 1개 업로드'** 옵션을 선택하시는 것이 좋습니다.")
+            
             if df_temp.shape[1] >= 2:
                 df_merged = pd.DataFrame()
-                # 날짜 대신 1, 2, 3... 형태의 순번(Index) 생성
                 df_merged['Date'] = np.arange(1, len(df_temp) + 1)
                 df_merged['Rainfall'] = df_temp.iloc[:, 0].astype(float)
                 df_merged['GWL'] = df_temp.iloc[:, 1].astype(float)
-                st.success(f"총 {len(df_merged)}개의 연속된 데이터가 로드되었습니다.")
+                st.success("✅ 업로드하신 데이터 파일로 분석을 진행합니다.")
             else:
-                st.error("파일은 반드시 2개 이상의 열(강수량, 지하수위)로 구성되어야 합니다.")
+                st.error("🚨 **[형식 오류]** 파일은 반드시 2개 이상의 열(강수량, 지하수위)로 구성되어야 합니다.")
+        else:
+            if os.path.exists(sample_file_path):
+                df_temp = pd.read_csv(sample_file_path) # 서버 샘플은 안전한 utf-8이라 가정
+                st.info("💡 안내: 서버에 내장된 기본 샘플 데이터가 로드되어 있습니다.")
+                if df_temp.shape[1] >= 2:
+                    df_merged = pd.DataFrame()
+                    df_merged['Date'] = np.arange(1, len(df_temp) + 1)
+                    df_merged['Rainfall'] = df_temp.iloc[:, 0].astype(float)
+                    df_merged['GWL'] = df_temp.iloc[:, 1].astype(float)
 
     st.markdown("---")
     st.header("2. 초기 파라미터 설정")
@@ -207,12 +255,16 @@ with st.sidebar:
 # 3. 데이터 실행 로직
 # ==========================================
 if df_merged is not None:
+    if df_merged.isnull().values.any():
+        st.warning("데이터에 빈칸(결측치)이 발견되어 선형 보간법(Linear Interpolation)으로 자동 처리했습니다.")
+        df_merged['Rainfall'] = df_merged['Rainfall'].interpolate(method='linear').fillna(0)
+        df_merged['GWL'] = df_merged['GWL'].interpolate(method='linear').fillna(method='bfill')
+
     calc = hWTF_Recharge_Calculator(s_idx, k, r_cr, h_max)
     try:
         x_raw = df_merged['Date'].values
         P_mm, P_m, r_cr_mm, H_calc = calc._prepare_units_and_gwl(df_merged['Rainfall'].values, df_merged['GWL'].values)
         
-        # [자동 계산] 최대 연속 무강우 일수(Maximum Dry Days) 탐색
         is_dry = (P_mm <= 0)
         max_dry_days, current_dry = 0, 0
         for dry in is_dry:
@@ -225,12 +277,10 @@ if df_merged is not None:
         calc.time_dry = max_dry_days if max_dry_days > 0 else 1
         st.caption(f"ℹ️ 데이터 스캔 결과, 최대 연속 무강우 일수(time_dry)는 **{calc.time_dry}일**로 자동 설정되었습니다.")
         
-        # 프리뷰 그래프 그리기
         st.subheader("📊 입력 데이터 사전 점검 (Preview)")
         fig1, ax1 = plt.subplots(figsize=(10, 4))
         ax1.plot(x_raw, H_calc, linewidth=1.2, label="GWL (m)", color="C0")
         
-        # X축 라벨 처리 (날짜형이면 'Time', 순번이면 'Time Steps (Days)')
         if upload_mode == "ㄷ. 날짜 없는 데이터 업로드":
             ax1.set_xlabel("Time Steps (Days)")
         else:
@@ -256,11 +306,10 @@ if df_merged is not None:
         with st.spinner("초기 파라미터로 hWTF 연산을 수행 중입니다..."):
             t_rain, t_rech, t_rate, H_sim = calc.run_simulation(P_mm, P_m, r_cr_mm, H_calc)
             
-            # --- 최적화 엔진 가동 ---
             if t_rate > 100.0:
                 st.warning(f"⚠️ 산정된 함양률이 **{t_rate:.1f}%** 로 물리적 한계치(100%)를 초과했습니다. 자동 파라미터 최적화를 시작합니다...")
                 
-                with st.spinner("지하수위 오차를 최소화하며 함양률을 100% 이하로 제어하는 최적 파라미터를 찾는 중입니다 (약 10초 소요)..."):
+                with st.spinner("오차를 최소화하며 함양률을 100% 이하로 제어하는 최적 파라미터를 찾는 중입니다..."):
                     def objective(params):
                         calc.k, calc.r_cr_input, calc.h_max = params
                         r_cr_mm_opt = float(calc.r_cr_input)
@@ -272,17 +321,15 @@ if df_merged is not None:
                     
                     bounds = ((-0.5, -0.001), (0.0, 50.0), (0.1, 10.0))
                     initial_guess = [k, r_cr, h_max]
-                    
                     res = minimize(objective, initial_guess, method='L-BFGS-B', bounds=bounds)
                     
                     calc.k, calc.r_cr_input, calc.h_max = res.x
                     r_cr_mm_final = float(calc.r_cr_input)
                     t_rain, t_rech, t_rate, H_sim = calc.run_simulation(P_mm, P_m, r_cr_mm_final, H_calc)
                     
-                    st.success(f"✨ 최적화 완료! 물리적으로 타당한 새로운 파라미터가 자동으로 적용되었습니다. \n\n"
-                               f"👉 **수정된 파라미터:** k = {calc.k:.4f}, r_cr = {calc.r_cr_input:.2f} mm, h_max = {calc.h_max:.2f} m")
+                    st.success(f"✨ 최적화 완료! 물리적으로 타당한 파라미터가 적용되었습니다. \n\n"
+                               f"👉 **최적 파라미터:** k = {calc.k:.4f}, r_cr = {calc.r_cr_input:.2f} mm, h_max = {calc.h_max:.2f} m")
             
-            # --- 결과 출력 ---
             st.markdown("---")
             st.subheader("✅ 최종 산정 결과 (Results)")
             col1, col2, col3 = st.columns(3)
@@ -305,5 +352,20 @@ if df_merged is not None:
             ax.legend()
             ax.grid(True, linestyle="--", alpha=0.4)
             st.pyplot(fig2)
+
+            result_df = pd.DataFrame({
+                'Date': df_merged['Date'],
+                'Rainfall_mm': P_mm,
+                'Observed_GWL_m': H_calc,
+                'Simulated_GWL_m': H_sim
+            })
+            csv_data = result_df.to_csv(index=False).encode('utf-8-sig') # 엑셀에서 한글 안 깨지도록 utf-8-sig 적용
+            
+            st.download_button(
+                label="📥 계산된 일별 시뮬레이션 결과 다운로드 (CSV)",
+                data=csv_data,
+                file_name="hWTF_simulation_results.csv",
+                mime="text/csv",
+            )
 else:
-    st.info("👈 왼쪽 사이드바에서 분석할 데이터를 업로드해 주세요.")
+    st.info("👈 왼쪽 사이드바에서 분석할 데이터 업로드 방식을 선택해 주세요.")
