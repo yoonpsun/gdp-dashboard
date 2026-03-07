@@ -11,14 +11,12 @@ from scipy.optimize import minimize
 st.set_page_config(page_title="hWTF Recharge Calculator", layout="wide")
 
 # ==========================================
-# [신규 추가] 안전한 CSV 읽기 함수 (인코딩 자동 감지)
+# [안전한 CSV 읽기 함수] 인코딩 자동 감지
 # ==========================================
 def read_csv_robust(file):
     try:
-        # 전 세계 표준 방식 (UTF-8)으로 먼저 시도
         return pd.read_csv(file, encoding='utf-8')
     except UnicodeDecodeError:
-        # 에러가 나면 파일 포인터를 처음으로 되돌리고 한국어(CP949) 방식으로 재시도
         file.seek(0)
         return pd.read_csv(file, encoding='cp949')
 
@@ -31,7 +29,7 @@ class hWTF_Recharge_Calculator:
         self.r_cr_input = float(r_cr_input)
         self.h_max = float(h_max)
         self.verbose = bool(verbose)
-        self.time_dry = 1 
+        self.time_dry = 30 # 매크로 디폴트: 30일
 
         self.soil_db = [
             [0.43, 0.045, 14.5, 2.68, 7.128], [0.41, 0.065, 7.5,  1.89, 1.061],
@@ -86,7 +84,7 @@ class hWTF_Recharge_Calculator:
              self._quad_vba(v, x5, x7, vg5, vg6, vg7)
         return (v * dh_use - q2) / dh_use if wet_event else (v * dh_use - q2) * 100
 
-    def run_simulation(self, P_mm, P_m, r_cr_mm, H_calc):
+    def run_simulation(self, P_mm, P_m, r_cr_mm, H_calc, h_min_manual=None):
         days = len(H_calc)
         rech = np.zeros(days)
         current_dry_days = int(self.time_dry)
@@ -128,7 +126,9 @@ class hWTF_Recharge_Calculator:
         avg_v = (ns_sum / nr_count) if nr_count > 0 else 1.0
         param_fn = ((total_rech / total_rain) / avg_v) if avg_v > 0 and total_rain > 0 else 0.0
 
-        h_min = np.min(H_calc)
+        # h_min 처리 로직 (수동 입력값이 있으면 사용, 없으면 데이터 최소값 사용)
+        h_min = h_min_manual if h_min_manual is not None else np.min(H_calc)
+        
         H_sim = np.zeros(days)
         H_sim[0] = H_calc[0] - h_min
 
@@ -140,8 +140,8 @@ class hWTF_Recharge_Calculator:
 # ==========================================
 # 2. UI 구성 (스트림릿 화면)
 # ==========================================
-st.title("🌱 Hybrid hWTF 지하수 함양률 산정 모델")
-st.markdown("관측 데이터와 입력 파라미터를 기반으로 함양률을 산정하며, **100% 초과 시 AI가 물리적 한계치 내로 자동 최적화를 수행합니다.**")
+st.title("🌱 Hybrid hWTF 지하수 함양률 산정 모델 (자동 최적화)")
+st.markdown("관측 데이터와 엑셀 매크로 파라미터를 기반으로 함양률을 산정하며, **100% 초과 시 AI가 자동 최적화를 수행합니다.**")
 
 soil_names = ["Sand", "Sandy Loam", "Loamy Sand", "Silt Loam", "Silt", "Clay",
               "Silty Clay", "Sandy Clay", "Silty Clay Loam", "Clay Loam", "Sandy Clay Loam", "Loam"]
@@ -162,33 +162,20 @@ with st.sidebar:
     
     df_merged = None
     
-    # ----------------------------------------
-    # [ㄱ 모드] 통합 파일 업로드 및 스마트 검증
-    # ----------------------------------------
     if upload_mode == "ㄱ. 통합 파일 1개 업로드 (날짜 포함)":
         st.caption("✔️ 파일 형식: [날짜, 강수량(mm), 지하수위(m)]")
         uploaded_file = st.file_uploader("통합 CSV 파일 업로드", type=["csv"])
-        
         if uploaded_file:
-            df_temp = read_csv_robust(uploaded_file) # 인코딩 자동 감지 함수 사용
-            
-            # 검증 1: 열이 3개 미만인 경우
+            df_temp = read_csv_robust(uploaded_file)
             if df_temp.shape[1] < 3:
-                st.error("🚨 **[형식 오류]** 업로드하신 파일의 열이 3개 미만(날짜 누락 등)입니다.\n\n"
-                         "👉 만약 날짜가 없는 데이터라면 위쪽에서 **'ㄷ. 날짜 없는 데이터 업로드'** 옵션을 선택해 주세요.")
+                st.error("🚨 **[형식 오류]** 파일의 열이 3개 미만(날짜 누락 등)입니다.\n\n"
+                         "👉 날짜가 없는 데이터라면 **'ㄷ. 날짜 없는 데이터 업로드'** 옵션을 선택해 주세요.")
             else:
                 df_merged = pd.DataFrame()
                 df_merged['Date'] = pd.to_datetime(df_temp.iloc[:, 0], errors='coerce')
                 df_merged['Rainfall'] = df_temp.iloc[:, 1].astype(float)
                 df_merged['GWL'] = df_temp.iloc[:, 2].astype(float)
                 
-                # 검증 2: 첫 번째 열이 날짜 포맷으로 변환되지 않은 경우
-                if df_merged['Date'].isna().mean() > 0.5:
-                    st.warning("⚠️ **[주의]** 첫 번째 열이 정상적인 '날짜' 형식으로 인식되지 않습니다. 분석은 진행되나, 날짜가 없는 데이터라면 **'ㄷ'** 옵션이 더 적합할 수 있습니다.")
-                
-    # ----------------------------------------
-    # [ㄴ 모드] 개별 파일 업로드
-    # ----------------------------------------
     elif upload_mode == "ㄴ. 강수량 / 지하수위 개별 업로드":
         st.caption("✔️ 날짜를 기준으로 두 파일을 자동 병합합니다.")
         rain_file = st.file_uploader("🌧️ 강수량 파일 (날짜, 강수량mm)", type=["csv"])
@@ -203,27 +190,19 @@ with st.sidebar:
             else:
                 df_rain.columns = ['Date', 'Rainfall']
                 df_gwl.columns = ['Date', 'GWL']
-                
                 df_rain['Date'] = pd.to_datetime(df_rain['Date'])
                 df_gwl['Date'] = pd.to_datetime(df_gwl['Date'])
-                
                 df_merged = pd.merge(df_rain, df_gwl, on='Date', how='inner').sort_values('Date').reset_index(drop=True)
                 st.success(f"두 파일이 병합되었습니다! (총 {len(df_merged)}일 데이터)")
 
-    # ----------------------------------------
-    # [ㄷ 모드] 날짜 없는 데이터 업로드 및 스마트 검증
-    # ----------------------------------------
     elif upload_mode == "ㄷ. 날짜 없는 데이터 업로드":
-        st.info("💡 **확인해 주세요!**\n날짜 열이 없는 파일인 경우, 반드시 **첫 번째 열이 강수량(mm)**, **두 번째 열이 지하수위(m)** 순서로 구성되어 있는지 점검해 주세요.")
+        st.info("💡 **확인해 주세요!**\n반드시 **첫 번째 열이 강수량(mm)**, **두 번째 열이 지하수위(m)** 순서여야 합니다.")
         uploaded_file = st.file_uploader("날짜 없는 CSV 파일 업로드", type=["csv"])
         
         if uploaded_file is not None:
             df_temp = read_csv_robust(uploaded_file)
-            
-            # 검증 3: 파일 열이 3개 이상인 경우 (잘못 선택했을 가능성)
             if df_temp.shape[1] >= 3:
-                st.warning("🚨 **[형식 안내]** 업로드하신 파일에 3개 이상의 열이 있습니다. 만약 첫 번째 열이 '날짜'라면 위쪽에서 **'ㄱ. 통합 파일 1개 업로드'** 옵션을 선택하시는 것이 좋습니다.")
-            
+                st.warning("🚨 **[형식 안내]** 열이 3개 이상입니다. 첫 열이 '날짜'라면 **'ㄱ'** 옵션을 선택하세요.")
             if df_temp.shape[1] >= 2:
                 df_merged = pd.DataFrame()
                 df_merged['Date'] = np.arange(1, len(df_temp) + 1)
@@ -231,10 +210,10 @@ with st.sidebar:
                 df_merged['GWL'] = df_temp.iloc[:, 1].astype(float)
                 st.success("✅ 업로드하신 데이터 파일로 분석을 진행합니다.")
             else:
-                st.error("🚨 **[형식 오류]** 파일은 반드시 2개 이상의 열(강수량, 지하수위)로 구성되어야 합니다.")
+                st.error("🚨 **[형식 오류]** 파일은 반드시 2개 이상의 열로 구성되어야 합니다.")
         else:
             if os.path.exists(sample_file_path):
-                df_temp = pd.read_csv(sample_file_path) # 서버 샘플은 안전한 utf-8이라 가정
+                df_temp = pd.read_csv(sample_file_path)
                 st.info("💡 안내: 서버에 내장된 기본 샘플 데이터가 로드되어 있습니다.")
                 if df_temp.shape[1] >= 2:
                     df_merged = pd.DataFrame()
@@ -242,130 +221,30 @@ with st.sidebar:
                     df_merged['Rainfall'] = df_temp.iloc[:, 0].astype(float)
                     df_merged['GWL'] = df_temp.iloc[:, 1].astype(float)
 
+    # ----------------------------------------
+    # [매크로 감성 반영] 파라미터 입력창
+    # ----------------------------------------
     st.markdown("---")
-    st.header("2. 초기 파라미터 설정")
-    s_idx = st.selectbox("토양 종류 (Soil Type, 고정값)", range(12), format_func=lambda x: soil_names[x], index=0)
-    k = st.number_input("초기 기저유출 감수상수 (k)", value=-0.1, step=0.01, format="%.3f")
-    r_cr = st.number_input("초기 임계 강수량 (r_cr, mm)", value=5.0, step=0.5)
-    h_max = st.number_input("초기 모세관대 두께 (h_max, m)", value=2.0, step=0.1)
+    st.header("2. 매크로 파라미터 설정")
     
-    run_btn = st.button("🚀 함양률 계산 및 최적화 실행", type="primary", use_container_width=True)
+    s_idx = st.selectbox("1) 토양 종류 (Soil type)", range(12), format_func=lambda x: soil_names[x], index=0)
+    k = st.number_input("2) 수위 감수상수 (Water Level Decay coeff.)", value=-0.09, step=0.01, format="%.3f")
+    
+    # h_min 처리 로직 추가 (수동 vs 자동)
+    st.markdown("**3) 최소 기준 수위 (Minimum water level)**")
+    h_min_auto = st.checkbox("데이터에서 자동 추출 (권장)", value=True)
+    if h_min_auto:
+        h_min_manual = None
+        st.caption("👉 업로드된 데이터의 최저 수위를 기준으로 시뮬레이션됩니다.")
+    else:
+        h_min_manual = st.number_input("수동 입력 (m)", value=3.16, step=0.01)
 
-# ==========================================
-# 3. 데이터 실행 로직
-# ==========================================
-if df_merged is not None:
-    if df_merged.isnull().values.any():
-        st.warning("데이터에 빈칸(결측치)이 발견되어 선형 보간법(Linear Interpolation)으로 자동 처리했습니다.")
-        df_merged['Rainfall'] = df_merged['Rainfall'].interpolate(method='linear').fillna(0)
-        df_merged['GWL'] = df_merged['GWL'].interpolate(method='linear').fillna(method='bfill')
-
-    calc = hWTF_Recharge_Calculator(s_idx, k, r_cr, h_max)
-    try:
-        x_raw = df_merged['Date'].values
-        P_mm, P_m, r_cr_mm, H_calc = calc._prepare_units_and_gwl(df_merged['Rainfall'].values, df_merged['GWL'].values)
-        
-        is_dry = (P_mm <= 0)
-        max_dry_days, current_dry = 0, 0
-        for dry in is_dry:
-            if dry:
-                current_dry += 1
-                if current_dry > max_dry_days: max_dry_days = current_dry
-            else:
-                current_dry = 0
-                
-        calc.time_dry = max_dry_days if max_dry_days > 0 else 1
-        st.caption(f"ℹ️ 데이터 스캔 결과, 최대 연속 무강우 일수(time_dry)는 **{calc.time_dry}일**로 자동 설정되었습니다.")
-        
-        st.subheader("📊 입력 데이터 사전 점검 (Preview)")
-        fig1, ax1 = plt.subplots(figsize=(10, 4))
-        ax1.plot(x_raw, H_calc, linewidth=1.2, label="GWL (m)", color="C0")
-        
-        if upload_mode == "ㄷ. 날짜 없는 데이터 업로드":
-            ax1.set_xlabel("Time Steps (Days)")
-        else:
-            ax1.set_xlabel("Time")
-            
-        ax1.set_ylabel("Groundwater Level (m)", color="C0")
-        ax1.tick_params(axis='y', labelcolor="C0")
-
-        ax2 = ax1.twinx()
-        ax2.bar(x_raw, P_mm, alpha=0.35, width=0.8, label="Rainfall (mm)", color="C1")
-        ax2.set_ylabel("Rainfall (mm)", color="C1")
-        ax2.tick_params(axis='y', labelcolor="C1")
-        ax2.invert_yaxis() 
-
-        fig1.legend(loc="lower left", bbox_to_anchor=(0.1, 0.1))
-        ax1.grid(True, linestyle="--", alpha=0.4)
-        st.pyplot(fig1)
-
-    except Exception as e:
-        st.error(f"데이터를 처리하는 중 오류가 발생했습니다: {e}")
-
-    if run_btn:
-        with st.spinner("초기 파라미터로 hWTF 연산을 수행 중입니다..."):
-            t_rain, t_rech, t_rate, H_sim = calc.run_simulation(P_mm, P_m, r_cr_mm, H_calc)
-            
-            if t_rate > 100.0:
-                st.warning(f"⚠️ 산정된 함양률이 **{t_rate:.1f}%** 로 물리적 한계치(100%)를 초과했습니다. 자동 파라미터 최적화를 시작합니다...")
-                
-                with st.spinner("오차를 최소화하며 함양률을 100% 이하로 제어하는 최적 파라미터를 찾는 중입니다..."):
-                    def objective(params):
-                        calc.k, calc.r_cr_input, calc.h_max = params
-                        r_cr_mm_opt = float(calc.r_cr_input)
-                        _, _, rate, h_s = calc.run_simulation(P_mm, P_m, r_cr_mm_opt, H_calc)
-                        
-                        rmse = np.sqrt(np.mean((H_calc - h_s)**2))
-                        penalty = max(0, rate - 99.0) * 1000 
-                        return rmse + penalty
-                    
-                    bounds = ((-0.5, -0.001), (0.0, 50.0), (0.1, 10.0))
-                    initial_guess = [k, r_cr, h_max]
-                    res = minimize(objective, initial_guess, method='L-BFGS-B', bounds=bounds)
-                    
-                    calc.k, calc.r_cr_input, calc.h_max = res.x
-                    r_cr_mm_final = float(calc.r_cr_input)
-                    t_rain, t_rech, t_rate, H_sim = calc.run_simulation(P_mm, P_m, r_cr_mm_final, H_calc)
-                    
-                    st.success(f"✨ 최적화 완료! 물리적으로 타당한 파라미터가 적용되었습니다. \n\n"
-                               f"👉 **최적 파라미터:** k = {calc.k:.4f}, r_cr = {calc.r_cr_input:.2f} mm, h_max = {calc.h_max:.2f} m")
-            
-            st.markdown("---")
-            st.subheader("✅ 최종 산정 결과 (Results)")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("총 강수량", f"{t_rain*1000:.1f} mm")
-            col2.metric("총 함양량", f"{t_rech*1000:.1f} mm")
-            col3.metric("지하수 함양률", f"{t_rate:.2f} %")
-            
-            st.subheader("📉 지하수위 관측치 vs 모의치 피팅 (Fitting)")
-            fig2, ax = plt.subplots(figsize=(10, 5))
-            ax.plot(x_raw, H_calc, label="Observed (Measured)", color="black", linewidth=1.2)
-            ax.scatter(x_raw, H_sim, label="Calculated (Simulated)", marker="o", facecolors="none", edgecolors="olivedrab", linewidths=1.2, s=35)
-            ax.set_title(f"GWL Comparison (Recharge Rate: {t_rate:.1f}%)")
-            
-            if upload_mode == "ㄷ. 날짜 없는 데이터 업로드":
-                ax.set_xlabel("Time Steps (Days)")
-            else:
-                ax.set_xlabel("Time")
-                
-            ax.set_ylabel("Groundwater Level (m)")
-            ax.legend()
-            ax.grid(True, linestyle="--", alpha=0.4)
-            st.pyplot(fig2)
-
-            result_df = pd.DataFrame({
-                'Date': df_merged['Date'],
-                'Rainfall_mm': P_mm,
-                'Observed_GWL_m': H_calc,
-                'Simulated_GWL_m': H_sim
-            })
-            csv_data = result_df.to_csv(index=False).encode('utf-8-sig') # 엑셀에서 한글 안 깨지도록 utf-8-sig 적용
-            
-            st.download_button(
-                label="📥 계산된 일별 시뮬레이션 결과 다운로드 (CSV)",
-                data=csv_data,
-                file_name="hWTF_simulation_results.csv",
-                mime="text/csv",
-            )
-else:
-    st.info("👈 왼쪽 사이드바에서 분석할 데이터 업로드 방식을 선택해 주세요.")
+    r_cr = st.number_input("4) 최소 임계 강수량 (Min. rainfall causing fluctuation)", value=1.0, step=0.1, help="엑셀의 0.001(m)은 1.0(mm)과 동일합니다. mm로 입력하세요.")
+    h_max = st.number_input("5) 최대 지하수위 변동폭 (Max. water-table fluctuation)", value=0.31, step=0.01)
+    
+    st.markdown("**6) 초기 무강우 일수 (Assumed previous dry period in days)**")
+    dry_mode = st.radio("설정 방식", ["✍️ 수동 입력 (매크로 방식)", "🤖 자동 스캔 (권장)"], label_visibility="collapsed")
+    
+    time_dry_manual = None
+    if dry_mode == "✍️ 수동 입력 (매크로 방식)":
+        time_dry_manual = st.number_
