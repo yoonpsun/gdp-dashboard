@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
-from scipy.optimize import minimize # 자동 최적화를 위한 라이브러리 추가
+from scipy.optimize import minimize 
 
 # ==========================================
 # 0. 웹 페이지 기본 설정
@@ -19,7 +19,7 @@ class hWTF_Recharge_Calculator:
         self.r_cr_input = float(r_cr_input)
         self.h_max = float(h_max)
         self.verbose = bool(verbose)
-        self.time_dry = 1 # 기본값 설정 후 내부에서 자동 계산됨
+        self.time_dry = 1 # 기본값 설정 후 메인 코드에서 '최대 무강우 일수'로 자동 계산됨
 
         # 12가지 토양 물성 DB (고정)
         self.soil_db = [
@@ -87,9 +87,7 @@ class hWTF_Recharge_Calculator:
              self._quad_vba(v, x5, x7, vg5, vg6, vg7)
         return (v * dh_use - q2) / dh_use if wet_event else (v * dh_use - q2) * 100
 
-    # 연산 속도 향상을 위해 메인 루프 분리
     def run_simulation(self, P_mm, P_m, H_calc):
-        # r_cr_input 처리
         r_cr_mm = self.r_cr_input * 1000.0 if (self.r_cr_input < 1.0 and np.nanmax(P_mm) > 1.0) else self.r_cr_input
         days = len(H_calc)
         rech = np.zeros(days)
@@ -166,7 +164,7 @@ with st.sidebar:
     k = st.number_input("초기 기저유출 감수상수 (k)", value=-0.1, step=0.01, format="%.3f")
     r_cr = st.number_input("초기 임계 강수량 (r_cr, mm/m)", value=5.0, step=0.5)
     h_max = st.number_input("초기 모세관대 두께 (h_max, m)", value=2.0, step=0.1)
-    # 초기 무강우 일수(time_dry) 입력창은 데이터 기반 자동 연산을 위해 제거되었습니다.
+    # 최대 무강우 일수(time_dry)는 내부에서 자동 연산되므로 입력창 제거됨
     
     run_btn = st.button("🚀 함양률 계산 및 최적화 실행", type="primary", use_container_width=True)
 
@@ -190,10 +188,22 @@ if df is not None:
         x_raw, P_in, H_in = calc._read_dataframe(df)
         P_mm, P_m, H_calc = calc._prepare_units_and_gwl(P_in, H_in)
         
-        # [자동 계산] 첫 비가 내리기 전까지의 초기 무강우 일수 탐색
-        first_rain_idx = np.argmax(P_mm > 0)
-        calc.time_dry = first_rain_idx + 1 if (first_rain_idx > 0 or P_mm[0] > 0) else len(P_mm)
-        st.caption(f"ℹ️ 데이터 분석 결과, 초기 무강우 일수(time_dry)는 **{calc.time_dry}일**로 자동 설정되었습니다.")
+        # [자동 계산] 강수량 데이터를 스캔하여 '최대 연속 무강우 일수(Maximum Dry Days)' 탐색
+        is_dry = (P_mm <= 0)
+        max_dry_days = 0
+        current_dry = 0
+        
+        for dry in is_dry:
+            if dry:
+                current_dry += 1
+                if current_dry > max_dry_days:
+                    max_dry_days = current_dry
+            else:
+                current_dry = 0
+                
+        # 최대 무강우 일수 클래스 변수에 적용 (비가 온 날이 없으면 전체 데이터 길이 적용)
+        calc.time_dry = max_dry_days if max_dry_days > 0 else 1
+        st.caption(f"ℹ️ 데이터 스캔 결과, 최대 연속 무강우 일수(time_dry)는 **{calc.time_dry}일**로 자동 설정되었습니다.")
 
     except Exception as e:
         st.error(f"데이터를 처리하는 중 오류가 발생했습니다: {e}")
